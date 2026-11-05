@@ -1,0 +1,33 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Backend: Launch (http)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "backend: build",
+            "program": "${workspaceFolder}/backend/LetsPlayDarts.Api/bin/Debug/net10.0/LetsPlayDarts.Api.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/backend/LetsPlayDarts.Api",
+            "env": {
+                "ASPNETCORE_ENVIRONMENT": "Development"
+            },
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        },
+        {
+            "name": "Frontend: Chrome against localhost",
+            "type": "chrome",
+            "request": "launch",
+            "url": "http://localhost:5173",
+            "webRoot": "${workspaceFolder}/frontend/src",
+            "preLaunchTask": "frontend: dev"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Full stack (Backend + Frontend)",
+            "configurations": ["Backend: Launch (http)", "Frontend: Chrome against localhost"]
+        }
+    ]
+}

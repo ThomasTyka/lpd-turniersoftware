@@ -1,0 +1,23 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - docker/.env
+    environment:
+      ConnectionStrings__DartsDb: "Data Source=/data/darts.db"
+      Storage__UploadRoot: "/data/uploads"
+    volumes:
+      - darts-data:/data
+      # Filesystem IPC with scripts/update-watcher.ps1, which runs directly on
+      # the Windows host (this container has no git/docker access of its own
+      # to pull or rebuild itself) - the backend drops a trigger file here and
+      # polls the status file the watcher writes back.
+      - ./update-ipc:/update-ipc
+    restart: unless-stopped
+
+volumes:
+  darts-data:

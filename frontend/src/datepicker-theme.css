@@ -1,0 +1,120 @@
+.flatpickr-calendar {
+  background: #1a140d;
+  border: 1px solid #3a2c1a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-radius: 0.6rem;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+.flatpickr-calendar:before,
+.flatpickr-calendar:after {
+  display: none;
+}
+
+.flatpickr-months .flatpickr-month,
+.flatpickr-current-month .flatpickr-monthDropdown-months,
+.flatpickr-current-month .flatpickr-monthDropdown-months .flatpickr-monthDropdown-month {
+  background: #1a140d;
+  color: #f5ead8;
+  fill: #f5ead8;
+}
+
+.flatpickr-months .flatpickr-prev-month,
+.flatpickr-months .flatpickr-next-month {
+  color: #b9a688;
+  fill: #b9a688;
+}
+
+.flatpickr-months .flatpickr-prev-month:hover,
+.flatpickr-months .flatpickr-next-month:hover {
+  color: var(--regie-primary, #ffad00);
+}
+
+.flatpickr-months .flatpickr-prev-month:hover svg,
+.flatpickr-months .flatpickr-next-month:hover svg {
+  fill: var(--regie-primary, #ffad00);
+}
+
+.flatpickr-current-month input.cur-year {
+  color: #f5ead8;
+}
+
+span.flatpickr-weekday {
+  background: #1a140d;
+  color: #8a7a60;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+}
+
+.flatpickr-day {
+  color: #f5ead8;
+}
+
+.flatpickr-day.prevMonthDay,
+.flatpickr-day.nextMonthDay {
+  color: #55401f;
+}
+
+.flatpickr-day:hover,
+.flatpickr-day:focus {
+  background: #241b10;
+  border-color: #241b10;
+}
+
+.flatpickr-day.today {
+  border-color: var(--regie-primary, #ffad00);
+}
+
+.flatpickr-day.today:hover {
+  background: var(--regie-primary, #ffad00);
+  color: #1a1206;
+}
+
+.flatpickr-day.selected,
+.flatpickr-day.selected:hover,
+.flatpickr-day.selected:focus {
+  background: var(--regie-primary, #ffad00);
+  border-color: var(--regie-primary, #ffad00);
+  color: #1a1206;
+  font-weight: 700;
+}
+
+.flatpickr-day.flatpickr-disabled,
+.flatpickr-day.flatpickr-disabled:hover {
+  color: #4a3d29;
+}
+
+.flatpickr-time {
+  border-top: 1px solid #3a2c1a;
+}
+
+.flatpickr-time input,
+.flatpickr-time .flatpickr-time-separator,
+.flatpickr-time .flatpickr-am-pm {
+  color: #f5ead8;
+  background: transparent;
+}
+
+.flatpickr-time input:hover,
+.flatpickr-time input:focus,
+.flatpickr-time .flatpickr-am-pm:hover {
+  background: #241b10;
+}
+
+.numInputWrapper span {
+  border-color: #3a2c1a;
+}
+
+.numInputWrapper span:hover {
+  background: #241b10;
+}
+
+.numInputWrapper span.arrowUp:after {
+  border-bottom-color: #b9a688;
+}
+
+.numInputWrapper span.arrowDown:after {
+  border-top-color: #b9a688;
+}

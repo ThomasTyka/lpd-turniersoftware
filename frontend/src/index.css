@@ -1,0 +1,362 @@
+/* The app has no light theme at all - every surface (Regie "control room",
+   Tablet, Monitor, Leinwand) is dark regardless of event branding or OS
+   preference, so declaring "light dark" here was letting a device set to
+   light mode fall back to the browser's light-mode native chrome for
+   anything not explicitly styled: focus rings, the iOS on-screen keyboard
+   accessory color, spellcheck/selection colors. Plain "dark" makes the
+   browser always pick its dark-appropriate defaults instead. */
+:root {
+  color-scheme: dark;
+  font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background-color: #0b0a09;
+  color: #ffad00;
+}
+
+/* Shared entrance animation for live-updating display screens (Board-
+   Monitor, Leinwand) - remount the element with a changed `key` to replay
+   it, e.g. when a new score comes in. */
+@keyframes lpd-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.lpd-pop-in {
+  animation: lpd-pop-in 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Vorrunden-Rangliste row flash - a brief glow on any row whose Highscore
+   just changed (Eurovision-style leaderboard reveal), using the row's own
+   --lpd-flash-color (the event's accent) rather than a fixed color so it
+   matches whatever branding is active. */
+@keyframes lpd-leaderboard-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--lpd-flash-color) 45%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.lpd-leaderboard-flash {
+  animation: lpd-leaderboard-flash 900ms ease-out;
+}
+
+/* Plain fade, no pop/scale - used for the Board-Monitor's "who's up next"
+   handover so it reads calmer than the punchier score reveal. */
+@keyframes lpd-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.lpd-fade-in {
+  animation: lpd-fade-in 500ms ease-out;
+}
+
+/* Same plain fade, slower - used where the whole "who's up next" block
+   (including the "Jetzt spielt" label) should ease in together. */
+.lpd-fade-in-slow {
+  animation: lpd-fade-in 3s ease-out;
+}
+
+/* Board-Monitor score reveal for a big throw (100+) - a quick pulse to
+   make it stand out from an ordinary reveal. */
+@keyframes lpd-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+}
+
+.lpd-pulse {
+  animation: lpd-pulse 600ms ease-in-out 2;
+}
+
+/* Confirms a tap landed on an icon-only button (no label text to react) -
+   e.g. the Tablet's "Aktualisieren" refresh icon. */
+@keyframes lpd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.lpd-spin {
+  animation: lpd-spin 600ms linear;
+}
+
+/* Tablet numpad key press feedback (old system used a hover/active
+   background on its plain div keys - buttons here get the same treatment
+   via :active since there's no hover on a touchscreen). currentColor picks
+   up each key's own inline `color`, so it works for both the accent-
+   colored keys and the dark-on-accent confirm key. */
+.lpd-numpad-cell {
+  transition: background-color 100ms ease;
+}
+
+.lpd-numpad-cell:active {
+  background-color: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.lpd-numpad-cell:disabled {
+  cursor: default;
+}
+
+/* Base form-control styling for the Regie ("modern, animiert, automatisch
+   im Kunden-Branding" per the project plan) - applied globally under
+   .regie rather than per-component, since the Regie has many small
+   sub-panels (GamePanel, KnockoutPanel, GroupPanel, TeamPanel, the various
+   forms in EventDetailView) that would otherwise each need the same
+   inputs/buttons restyled by hand. --regie-primary/secondary are set as
+   inline custom properties wherever the actual color is known (default
+   gold before an event is selected, the event's own branding once one
+   is) - see theme.ts. */
+.regie {
+  --regie-primary: #ffad00;
+  --regie-secondary: #3a1f00;
+}
+
+.regie h1,
+.regie h2,
+.regie h3,
+.regie h4 {
+  color: var(--regie-primary);
+}
+
+/* Scrollbars default to the OS/browser's own light-gray look, clashing
+   with the dark theme - and with the event's own branding, since that's
+   what --regie-primary/secondary resolve to once an event is selected
+   (see the .regie rule above). */
+.regie {
+  scrollbar-color: color-mix(in srgb, var(--regie-primary) 55%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.regie ::-webkit-scrollbar {
+  width: 0.6rem;
+  height: 0.6rem;
+}
+
+.regie ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.regie ::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--regie-primary) 55%, transparent);
+  border-radius: 999px;
+}
+
+.regie ::-webkit-scrollbar-thumb:hover {
+  background: var(--regie-primary);
+}
+
+.regie input,
+.regie select,
+.regie textarea {
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.5rem;
+  border: 1px solid #3a2c1a;
+  background: #150f09;
+  color: #f5ead8;
+  font-size: 0.9rem;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+/* Browsers force their own light autofill background on recognized fields
+   (e.g. a "Vorname" input) and ignore a plain background-color override -
+   only an inset box-shadow large enough to cover the field actually wins.
+   The long transition delay stops the light color from flashing briefly
+   before this rule takes over. */
+.regie input:-webkit-autofill,
+.regie input:-webkit-autofill:hover,
+.regie input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #f5ead8;
+  -webkit-box-shadow: 0 0 0 1000px #150f09 inset;
+  box-shadow: 0 0 0 1000px #150f09 inset;
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+.regie input:focus,
+.regie select:focus,
+.regie textarea:focus {
+  outline: none;
+  border-color: var(--regie-primary);
+}
+
+.regie input[type='checkbox'],
+.regie input[type='radio'] {
+  width: auto;
+  accent-color: var(--regie-primary);
+}
+
+/* Checkbox/radio labels sit in a flex row next to their control and are
+   always used inside a wrapping container that provides its own `gap`
+   between rows (player pick-lists, scene toggles) - the base label's own
+   vertical margin would double up with that gap, spacing rows out much
+   further than intended. */
+.regie label:has(> input[type='checkbox'], > input[type='radio']) {
+  margin: 0;
+}
+
+/* Native date/time/color pickers otherwise render their light-mode
+   variant (dark calendar icon on our dark input, effectively invisible)
+   - color-scheme: dark makes the browser draw its own dark version of
+   the picker icon and popup instead of us trying to reskin it. */
+.regie input[type='date'],
+.regie input[type='datetime-local'],
+.regie input[type='time'],
+.regie input[type='color'] {
+  color-scheme: dark;
+}
+
+.regie input[type='color'] {
+  padding: 0.25rem;
+  height: 2.3rem;
+  cursor: pointer;
+}
+
+/* The native up/down spinner can't be reskinned to match the dark theme in
+   any browser - it stays a jarring light-grey OS control no matter what.
+   Removing it entirely reads cleaner than a half-restyled one. */
+.regie input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+.regie input[type='number']::-webkit-outer-spin-button,
+.regie input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.regie button {
+  border: 1px solid #3a2c1a;
+  background: #241b10;
+  color: #f5ead8;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.regie button:hover {
+  border-color: var(--regie-primary);
+}
+
+.regie button.primary {
+  background: var(--regie-primary);
+  border-color: var(--regie-primary);
+  color: #1a1206;
+}
+
+.regie button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Modern segmented-control tab strip (Dashboard views, tournament sub-
+   panels) - replaces the earlier row of plain bordered buttons, which read
+   as a form's action bar rather than a view switcher. Radii match the
+   rest of the Regie (0.75rem panels, 0.5rem buttons) rather than a full
+   pill, so the control reads as part of the same layout. Higher
+   specificity than the base ".regie button" rule above so the borderless
+   look wins outright. */
+.regie .lpd-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  padding: 0.3rem;
+  background: #150f09;
+  border: 1px solid #3a2c1a;
+  border-radius: 0.5rem;
+}
+
+.regie .lpd-tab {
+  border: none;
+  background: transparent;
+  color: #b9a688;
+  border-radius: 0.35rem;
+  padding: 0.65rem 1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.regie .lpd-tab:hover:not(.lpd-tab-active) {
+  background: rgba(245, 234, 216, 0.08);
+  color: #f5ead8;
+}
+
+.regie .lpd-tab-active {
+  background: var(--regie-primary);
+  color: #1a1206;
+}
+
+.regie label {
+  display: block;
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+/* Plain "Text above field" labels (not a checkbox/radio, which needs the
+   text sitting inline next to it instead) get no gap between the label
+   text and its input by default - block layout just stacks them flush.
+   Stacking as a column with an explicit gap fixes that everywhere at
+   once, rather than requiring every form to inline its own fieldStyle. */
+.regie label:not(:has(> input[type='checkbox'], > input[type='radio'])) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+/* Tablet/Monitor pairing screens aren't nested under .regie (their accent
+   color comes from the event's own branding, computed at runtime and
+   passed down here as the --lpd-accent custom property rather than a
+   fixed value) - without this, their <input>s kept the browser's default
+   light-mode placeholder color and focus ring no matter what border/
+   background was set explicitly on the input itself, showing up as a
+   stray white outline the moment you tap in and start typing. */
+.lpd-tablet input::placeholder {
+  color: color-mix(in srgb, var(--lpd-accent) 55%, transparent);
+  opacity: 1;
+}
+
+.lpd-tablet input:focus {
+  outline: none;
+  border-color: var(--lpd-accent);
+}
+
+/* Hides a scrollable list's own scrollbar so its content's true width
+   matches a sibling element sized to the same max-width exactly (e.g. the
+   Tablet's board-picker list vs. its search field right above) - the
+   scrollbar would otherwise eat into the list's content width once it has
+   enough items to actually scroll, while the field above it (not inside
+   the scrolling box) keeps its full width. Touch scrolling still works
+   without a visible scrollbar, same as any native touch app. */
+.lpd-hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.lpd-hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}

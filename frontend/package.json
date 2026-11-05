@@ -1,0 +1,35 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "cy:server": "node cypress/start-server.mjs",
+    "e2e": "start-server-and-test cy:server http://localhost:5299/api/server-info \"cypress run\"",
+    "e2e:open": "start-server-and-test cy:server http://localhost:5299/api/server-info \"cypress open\""
+  },
+  "dependencies": {
+    "@microsoft/signalr": "^10.0.0",
+    "flatpickr": "^4.6.13",
+    "lottie-react": "^3.1.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "cypress": "^15.21.1",
+    "oxlint": "^1.71.0",
+    "start-server-and-test": "^3.0.12",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1"
+  }
+}

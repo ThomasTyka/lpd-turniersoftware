@@ -1,0 +1,65 @@
+@startuml
+title LetsPlayDarts - Domain Model
+
+class Event {
+  +Id: Guid
+  +Name: string
+  +CustomerName: string
+  +EventDate: DateTime
+  +Location: string
+}
+
+class Player {
+  +Id: Guid
+  +FirstName: string
+  +LastName: string
+  +Nickname: string?
+  +DisplayName: string
+}
+
+class Tournament {
+  +Id: Guid
+  +QualificationSettings: GameSettings
+  +FinalSettings: GameSettings
+  +Status: TournamentStatus
+}
+
+class Board {
+  +Id: Guid
+  +Number: int
+  +LocationDescription: string?
+  +Status: BoardStatus
+}
+
+class GameSettings {
+  +Mode: GameMode
+  +StartScore: int?
+}
+
+enum GameMode {
+  Highscore
+  X01
+}
+
+enum TournamentStatus {
+  Draft
+  Running
+  FinalStarted
+  Finished
+  Cancelled
+}
+
+enum BoardStatus {
+  Available
+  InUse
+  OutOfService
+}
+
+Event "1" o-- "*" Player
+Event "1" o-- "*" Tournament
+Event "1" o-- "*" Board
+
+Tournament "1" --> "1" GameSettings : qualification
+Tournament "1" --> "1" GameSettings : final
+
+@enduml

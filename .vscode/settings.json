@@ -1,0 +1,14 @@
+{
+    "dotnet.defaultSolution": "backend/LetsPlayDarts.sln",
+    "files.exclude": {
+        "**/bin": true,
+        "**/obj": true
+    },
+    "search.exclude": {
+        "**/bin": true,
+        "**/obj": true,
+        "**/node_modules": true,
+        "frontend/dist": true
+    },
+    "editor.formatOnSave": true
+}

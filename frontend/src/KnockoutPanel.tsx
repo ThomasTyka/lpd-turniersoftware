@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import * as signalR from '@microsoft/signalr'
-import { API_BASE_URL, api, type AvailableSubstitute, type Board, type Game, type KnockoutMatch, type Tournament } from './api'
+import { api, type AvailableSubstitute, type Board, type Game, type KnockoutMatch, type Tournament } from './api'
+import { createLiveConnection } from './realtime'
 import { DANGER, TEXT_FAINT, TEXT_MUTED, buttonStyle, pillStyle, rowCardStyle, sectionHeadingStyle } from './theme'
 
 const fieldStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '0.3rem', fontSize: '0.8rem' }
@@ -124,18 +124,21 @@ export function KnockoutPanel({
   useEffect(reload, [eventId, tournamentId])
 
   useEffect(() => {
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_BASE_URL}/hubs/game`)
-      .withAutomaticReconnect()
-      .build()
-
-    connection.on('knockoutUpdated', (updated: KnockoutMatch[]) => setMatches(updated))
-    connection.onreconnected(() => connection.invoke('JoinTournament', tournamentId))
-    connection.start().then(() => connection.invoke('JoinTournament', tournamentId))
-
+    let cancelled = false
+    const stop = createLiveConnection({
+      setup: (connection) => connection.on('knockoutUpdated', (updated: KnockoutMatch[]) => setMatches(updated)),
+      // Reload after every (re)connect - updates sent while disconnected are lost (E-18).
+      onConnected: async (connection) => {
+        await connection.invoke('JoinTournament', tournamentId)
+        const latest = await api.getKnockoutMatches(eventId, tournamentId)
+        if (!cancelled) setMatches(latest)
+      },
+    })
     return () => {
-      connection.stop()
+      cancelled = true
+      stop()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tournamentId])
 
   if (error)

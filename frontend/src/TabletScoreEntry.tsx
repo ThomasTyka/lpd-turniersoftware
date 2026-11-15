@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import * as signalR from '@microsoft/signalr'
+import type * as signalR from '@microsoft/signalr'
 import { Lottie } from 'lottie-react'
-import { API_BASE_URL, api, type EventBranding, type Game, type GameEntry, type PairingPlayer, type PairingRoster } from './api'
+import { TurnRejectedError, api, type EventBranding, type Game, type GameEntry, type PairingPlayer, type PairingRoster } from './api'
+import {
+  applyPendingTurns,
+  newClientTurnId,
+  nextRoundIndex,
+  readQueue,
+  rejectionText,
+  writeQueue,
+  type PendingTurn,
+} from './pendingTurns'
+import { createLiveConnection, retryUntilSuccess, type ConnectionState } from './realtime'
 import { brandingColors } from './LiveGameView'
 import { DANGER, SUCCESS } from './theme'
 import logo from './assets/logo-full-transparent.svg'
@@ -57,8 +67,6 @@ const MAX_SCORE = 180
  * number pad rather than the platform keyboard (project plan 3.1:
  * "Tablet-Eingabe mit großem Ziffernblock").
  */
-type PendingTurn = { playerId: string; score: number }
-
 export function TabletScoreEntry({
   eventId,
   clientDeviceId,
@@ -70,7 +78,9 @@ export function TabletScoreEntry({
   boardId: string
   onGoToStartMenu: () => void
 }) {
-  const [game, setGame] = useState<Game | null | undefined>(undefined)
+  // Last state confirmed by the server. What the Tablet shows (`game`
+  // below) is this plus any throws still waiting in the queue (E-17).
+  const [serverGame, setGame] = useState<Game | null | undefined>(undefined)
 
   // Nearly every size in this file is in rem, which is always relative to
   // the root <html> element, never to a styled ancestor - so a font-size
@@ -97,61 +107,105 @@ export function TabletScoreEntry({
   // reopen "Neues Spiel" with the same players preselected.
   const [confirmAction, setConfirmAction] = useState<'end' | 'edit' | null>(null)
   const [menuError, setMenuError] = useState<string | null>(null)
-  const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
+  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting')
   const [branding, setBranding] = useState<EventBranding | null>(null)
-  const [pendingCount, setPendingCount] = useState(0)
   const [boardNumber, setBoardNumber] = useState<number | null>(null)
 
-  // Offline buffering ("Tablets puffern Eingaben: Bricht das WLAN kurz ab,
-  // gehen keine Scores verloren", project plan 3.6). Persisted to
-  // localStorage, not just in-memory state, so a queued throw also
-  // survives the tablet being closed/crashing before the connection comes
-  // back. Turns are replayed one at a time, in order - the server enforces
-  // alternating turn order, so sending them out of order or in parallel
-  // would just fail again.
+  // Offline buffering (E-17, P1-10). Every throw first goes into a queue
+  // persisted in localStorage (survives reload/crash), each with its own
+  // id, the game it belongs to and the round it fills. The queue is sent
+  // one throw at a time, in order:
+  // - offline / no answer: stop, retry later (reconnect, "online" event,
+  //   every 5 s) - the server recognizes a resent id, so nothing counts
+  //   twice;
+  // - rejected by the server: the queue stops and the Tablet shows the
+  //   reason until the scorer decides (resend or discard) - never dropped
+  //   silently.
+  // Meanwhile the Tablet applies the queued throws to the last server state
+  // itself, so it moves on to the next player correctly while offline.
   const queueKey = `lpd_pending_turns_${clientDeviceId}`
-  const readQueue = (): PendingTurn[] => {
-    try {
-      return JSON.parse(localStorage.getItem(queueKey) ?? '[]')
-    } catch {
-      return []
-    }
+  const [queue, setQueueState] = useState<PendingTurn[]>(() => readQueue(queueKey))
+  const setQueue = (next: PendingTurn[]) => {
+    writeQueue(queueKey, next)
+    setQueueState(next)
   }
-  const writeQueue = (queue: PendingTurn[]) => {
-    localStorage.setItem(queueKey, JSON.stringify(queue))
-    setPendingCount(queue.length)
-  }
+  const game = serverGame ? applyPendingTurns(serverGame, queue) : serverGame
+  const headRejection = queue[0]?.rejection ?? null
+  // The live connection can stay "connected" for a while after the WLAN
+  // drops (until its keep-alive times out) - a failed send is the faster
+  // signal, so the header says "Offline" as soon as either one does.
+  const [lastSendFailed, setLastSendFailed] = useState(false)
 
+  const flushingRef = useRef(false)
   const flushQueue = async () => {
-    let queue = readQueue()
-    while (queue.length > 0) {
-      const [next, ...rest] = queue
-      try {
-        const updated = await api.submitTabletTurn(eventId, clientDeviceId, next.playerId, next.score)
-        setGame(updated)
-        queue = rest
-        writeQueue(queue)
-      } catch (err) {
-        // fetch itself throwing (not an HTTP error response) means still
-        // offline - stop here and let the next reconnect/online event retry.
-        if (err instanceof TypeError) return
-        // A real rejection (e.g. the game finished while queued) can't
-        // become valid by retrying it - drop it rather than getting stuck.
-        queue = rest
-        writeQueue(queue)
+    if (flushingRef.current) return
+    flushingRef.current = true
+    try {
+      // localStorage is the source of truth here, not React state - a
+      // throw entered while a send is in flight must not be lost.
+      for (let current = readQueue(queueKey); current.length > 0 && !current[0].rejection; current = readQueue(queueKey)) {
+        const next = current[0]
+        try {
+          const result = await api.submitTabletTurn(eventId, clientDeviceId, {
+            playerId: next.playerId,
+            score: next.score,
+            clientTurnId: next.clientTurnId,
+            gameId: next.gameId || undefined,
+            roundIndex: next.roundIndex >= 0 ? next.roundIndex : undefined,
+          })
+          setGame(result.game)
+          setLastSendFailed(false)
+          setQueue(readQueue(queueKey).filter((t) => t.clientTurnId !== next.clientTurnId))
+        } catch (err) {
+          setLastSendFailed(!(err instanceof TurnRejectedError))
+          if (err instanceof TurnRejectedError) {
+            setQueue(
+              readQueue(queueKey).map((t) =>
+                t.clientTurnId === next.clientTurnId ? { ...t, rejection: { code: err.code, message: err.message } } : t,
+              ),
+            )
+          }
+          // OfflineError (or anything unexpected): keep the throw, try again later.
+          return
+        }
       }
+    } finally {
+      flushingRef.current = false
     }
   }
 
   const submitTurn = async (playerId: string, score: number) => {
-    try {
-      const updated = await api.submitTabletTurn(eventId, clientDeviceId, playerId, score)
-      setGame(updated)
-    } catch (err) {
-      if (!(err instanceof TypeError)) throw err
-      writeQueue([...readQueue(), { playerId, score }])
+    if (!game) return
+    const entry = game.entries.find((e) => e.playerId === playerId)
+    const turn: PendingTurn = {
+      clientTurnId: newClientTurnId(),
+      gameId: game.id,
+      playerId,
+      playerName: entry?.playerName ?? '',
+      score,
+      roundIndex: nextRoundIndex(game, playerId),
+      createdAt: new Date().toISOString(),
     }
+    setQueue([...readQueue(queueKey), turn])
+    await flushQueue()
   }
+
+  const retryRejected = () => {
+    const [head, ...rest] = readQueue(queueKey)
+    if (!head) return
+    setQueue([{ ...head, rejection: undefined }, ...rest])
+    flushQueue()
+  }
+
+  const discardRejected = () => {
+    setQueue(readQueue(queueKey).slice(1))
+    flushQueue()
+  }
+
+  // Corrections, cancelling and starting the next game all change the game
+  // on the server directly - with throws still queued or no connection
+  // they would scramble the queue's order, so they wait (decision 15.11.).
+  const serverActionsLocked = connectionState !== 'connected' || queue.length > 0
 
   // "Spiel wiederholen" on the post-game screen: same players, same
   // board/tournament, but a freshly shuffled throwing order (rather than
@@ -180,10 +234,17 @@ export function TabletScoreEntry({
   }
 
   useEffect(() => {
-    setPendingCount(readQueue().length)
     flushQueue()
     window.addEventListener('online', flushQueue)
-    return () => window.removeEventListener('online', flushQueue)
+    // Belt and braces: the "online" event and the reconnect don't fire on
+    // every kind of WLAN drop, so a non-empty queue is retried every 5 s.
+    const interval = setInterval(() => {
+      if (readQueue(queueKey).length > 0) flushQueue()
+    }, 5000)
+    return () => {
+      window.removeEventListener('online', flushQueue)
+      clearInterval(interval)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId, clientDeviceId])
 
@@ -219,51 +280,59 @@ export function TabletScoreEntry({
   useEffect(() => {
     let cancelled = false
 
-    api.getCurrentGameForBoard(boardId).then((initial) => {
-      if (cancelled) return
-      // getCurrentGameForBoard falls back to the board's most recent game
-      // even once it's Finished (useful for the Board-Monitor/Leinwand,
-      // which should keep showing final results until a new game starts) -
-      // but re-pairing the Tablet to a board it just left via "Zurück zum
-      // Startmenü" should go straight to a fresh "Neues Spiel" instead of
-      // showing that same already-finished game again. A tie still awaiting
-      // a decision is the one exception - that genuinely needs resolving,
-      // not skipping.
+    // getCurrentGameForBoard falls back to the board's most recent game
+    // even once it's Finished (useful for the Board-Monitor/Leinwand, which
+    // should keep showing final results until a new game starts) - but
+    // re-pairing the Tablet to a board it just left via "Zurück zum
+    // Startmenü" should go straight to a fresh "Neues Spiel" instead of
+    // showing that same already-finished game again. A tie still awaiting a
+    // decision is the one exception - that genuinely needs resolving, not
+    // skipping.
+    const loadInitial = async () => {
+      const initial = await retryUntilSuccess(() => api.getCurrentGameForBoard(boardId), () => cancelled)
+      if (cancelled || initial === undefined) return
       const needsTieResolution =
         initial?.status === 'Finished' && initial.isTied && initial.knockoutMatchId !== null && initial.tiebreakWinnerId === null
       setGame(initial && initial.status === 'Finished' && !needsTieResolution ? null : initial)
-    })
+    }
+    loadInitial()
 
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_BASE_URL}/hubs/game`)
-      .withAutomaticReconnect()
-      .build()
+    // After every (re)connect: rejoin, re-register and reload the current
+    // state (E-18) - anything entered from the Regie while this Tablet was
+    // offline would otherwise stay invisible until the next live update. A
+    // finished game only replaces what's shown if it's the one already on
+    // screen (its final result); "Neues Spiel" stays put.
+    const refresh = async () => {
+      const latest = await api.getCurrentGameForBoard(boardId).catch(() => undefined)
+      if (cancelled || latest === undefined) return
+      setGame((shown) => {
+        if (shown === undefined) return shown
+        if (latest && latest.status === 'Finished' && latest.id !== shown?.id) return shown
+        return latest
+      })
+    }
 
-    connection.on('gameUpdated', (updated: Game) => setGame(updated))
-    connection.on('gameStarted', (started: Game) => setGame(started))
-    connection.onreconnecting(() => setConnectionState('connecting'))
-    connection.onreconnected(() => {
-      setConnectionState('connected')
-      connection.invoke('JoinBoard', boardId)
-      connection.invoke('RegisterDevice', clientDeviceId)
-      flushQueue()
-    })
-    connection.onclose(() => setConnectionState('disconnected'))
-
-    connection
-      .start()
-      .then(async () => {
-        setConnectionState('connected')
+    const stop = createLiveConnection({
+      setup: (connection: signalR.HubConnection) => {
+        connection.on('gameUpdated', (updated: Game) => setGame(updated))
+        connection.on('gameStarted', (started: Game) => setGame(started))
+      },
+      onConnected: async (connection) => {
         await connection.invoke('JoinBoard', boardId)
         await connection.invoke('RegisterDevice', clientDeviceId)
+        await refresh()
         flushQueue()
-      })
-      .catch(() => setConnectionState('disconnected'))
+      },
+      onStateChange: (state) => {
+        if (!cancelled) setConnectionState(state)
+      },
+    })
 
     return () => {
       cancelled = true
-      connection.stop()
+      stop()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, clientDeviceId])
 
   // "Beenden" abandons the game and goes straight back to "Warte auf
@@ -317,9 +386,13 @@ export function TabletScoreEntry({
             still benefits from a bit of app chrome to navigate by. */}
         <img src={logo} alt="LetsPlayDarts" height={40} />
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
-          {pendingCount > 0 && (
-            <span style={{ fontSize: '0.75rem', opacity: 0.85 }}>
-              {pendingCount} {pendingCount === 1 ? 'Wurf' : 'Würfe'} werden nachgereicht…
+          {queue.length > 0 && (
+            <span data-testid="pending-turns" style={{ fontSize: '0.75rem', opacity: 0.85, color: headRejection ? DANGER : undefined }}>
+              {headRejection
+                ? `Gestoppt – ${queue.length} ${queue.length === 1 ? 'Wurf wartet' : 'Würfe warten'}`
+                : connectionState === 'connected' && !lastSendFailed
+                  ? `${queue.length} ${queue.length === 1 ? 'Wurf wird' : 'Würfe werden'} gesendet…`
+                  : `Offline – ${queue.length} ${queue.length === 1 ? 'Wurf wartet' : 'Würfe warten'}`}
             </span>
           )}
           <span
@@ -381,7 +454,7 @@ export function TabletScoreEntry({
             >
               <button
                 type="button"
-                disabled={!game || game.status !== 'InProgress'}
+                disabled={!game || game.status !== 'InProgress' || serverActionsLocked}
                 onClick={() => {
                   setMenuOpen(false)
                   setConfirmAction('end')
@@ -394,15 +467,15 @@ export function TabletScoreEntry({
                   color: DANGER,
                   textAlign: 'left',
                   fontSize: '0.95rem',
-                  cursor: game && game.status === 'InProgress' ? 'pointer' : 'default',
-                  opacity: game && game.status === 'InProgress' ? 1 : 0.4,
+                  cursor: game && game.status === 'InProgress' && !serverActionsLocked ? 'pointer' : 'default',
+                  opacity: game && game.status === 'InProgress' && !serverActionsLocked ? 1 : 0.4,
                 }}
               >
                 Beenden
               </button>
               <button
                 type="button"
-                disabled={!game || game.status !== 'InProgress'}
+                disabled={!game || game.status !== 'InProgress' || serverActionsLocked}
                 onClick={() => {
                   setMenuOpen(false)
                   setConfirmAction('edit')
@@ -414,8 +487,8 @@ export function TabletScoreEntry({
                   color: primary,
                   textAlign: 'left',
                   fontSize: '0.95rem',
-                  cursor: game && game.status === 'InProgress' ? 'pointer' : 'default',
-                  opacity: game && game.status === 'InProgress' ? 1 : 0.4,
+                  cursor: game && game.status === 'InProgress' && !serverActionsLocked ? 'pointer' : 'default',
+                  opacity: game && game.status === 'InProgress' && !serverActionsLocked ? 1 : 0.4,
                 }}
               >
                 Bearbeiten
@@ -484,6 +557,8 @@ export function TabletScoreEntry({
         </p>
       )}
 
+      {queue[0]?.rejection && <RejectedTurnBanner turn={queue[0]} accent={primary} onRetry={retryRejected} onDiscard={discardRejected} />}
+
       {game === undefined && <p style={{ textAlign: 'center', opacity: 0.7 }}>Lädt…</p>}
       {game === null && (
         <NewGameOnBoard
@@ -498,6 +573,9 @@ export function TabletScoreEntry({
       {game && (
         <TurnEntryForm
           game={game}
+          serverActionsLocked={serverActionsLocked}
+          pendingPlayerIds={new Set(queue.filter((t) => t.gameId === game.id && !t.rejection).map((t) => t.playerId))}
+          queuedCount={queue.length}
           onSubmitTurn={submitTurn}
           onUndoTurn={(playerId) => api.undoTabletTurn(eventId, clientDeviceId, playerId).then(setGame)}
           onEditTurn={(playerId, throwIndex, score) => api.editTabletTurn(eventId, clientDeviceId, playerId, throwIndex, score).then(setGame)}
@@ -916,6 +994,9 @@ function NewGameOnBoard({
 
 function TurnEntryForm({
   game,
+  serverActionsLocked,
+  pendingPlayerIds,
+  queuedCount,
   onSubmitTurn,
   onUndoTurn,
   onEditTurn,
@@ -929,6 +1010,11 @@ function TurnEntryForm({
   boardNumber,
 }: {
   game: Game
+  /** No connection or throws still queued - corrections etc. wait (E-17). */
+  serverActionsLocked: boolean
+  /** Players whose latest throw shown here is not yet confirmed by the server. */
+  pendingPlayerIds: Set<string>
+  queuedCount: number
   onSubmitTurn: (playerId: string, score: number) => Promise<void>
   onUndoTurn: (playerId: string) => Promise<void>
   onEditTurn: (playerId: string, throwIndex: number, score: number) => Promise<void>
@@ -1019,9 +1105,11 @@ function TurnEntryForm({
     if (score === '' || !currentEntry) return
     setError(null)
     const thrown = Number(score)
+    // Cleared right away: the throw is safely in the queue the moment
+    // onSubmitTurn starts (see TabletScoreEntry), sending happens after.
+    setScore('')
     try {
       await onSubmitTurn(currentEntry.playerId, thrown)
-      setScore('')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -1039,9 +1127,9 @@ function TurnEntryForm({
       setError('Der Rest kann nicht höher als der aktuelle Rest sein.')
       return
     }
+    setScore('')
     try {
       await onSubmitTurn(currentEntry.playerId, thrown)
-      setScore('')
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -1187,7 +1275,7 @@ function TurnEntryForm({
               key={entry.playerId}
               type="button"
               onClick={() => resolveTie(entry.playerId)}
-              disabled={resolvingTie}
+              disabled={resolvingTie || serverActionsLocked}
               style={{
                 border: `1px solid ${accent}`,
                 background: accent,
@@ -1457,7 +1545,8 @@ function TurnEntryForm({
                 </div>
               </div>
 
-              {canDeleteLastThrow && (
+              {canDeleteLastThrow && serverActionsLocked && <CorrectionLockedHint />}
+              {canDeleteLastThrow && !serverActionsLocked && (
                 <button
                   type="button"
                   onClick={handleDeleteLastThrow}
@@ -1524,11 +1613,13 @@ function TurnEntryForm({
                   <tr
                     key={entry.playerId}
                     ref={isTurn ? activeRowRef : undefined}
-                    onClick={() => setEditingPlayerId(entry.playerId)}
+                    onClick={() => {
+                      if (!serverActionsLocked) setEditingPlayerId(entry.playerId)
+                    }}
                     style={{
                       background: isTurn ? accent : 'transparent',
                       color: isTurn ? '#0b0a09' : accent,
-                      cursor: 'pointer',
+                      cursor: serverActionsLocked ? 'default' : 'pointer',
                     }}
                   >
                     <td style={{ padding: '0.4rem 0.5rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1536,7 +1627,14 @@ function TurnEntryForm({
                     </td>
                     <td style={{ textAlign: 'right', padding: '0.4rem 0.5rem', fontWeight: 700 }}>{value}</td>
                     <td style={{ textAlign: 'right', padding: '0.4rem 0.5rem' }}>{average}</td>
-                    <td style={{ textAlign: 'right', padding: '0.4rem 0.5rem' }}>{lastThrow}</td>
+                    <td style={{ textAlign: 'right', padding: '0.4rem 0.5rem' }}>
+                      {lastThrow}
+                      {pendingPlayerIds.has(entry.playerId) && (
+                        <span data-testid="pending-mark" title="Noch nicht beim Server" style={{ marginLeft: '0.3rem', opacity: 0.7 }}>
+                          ⏳
+                        </span>
+                      )}
+                    </td>
                     <td style={{ textAlign: 'right', padding: '0.4rem 0.5rem' }}>{gap === 0 ? '🏆' : `-${gap}`}</td>
                   </tr>
                 )
@@ -1552,7 +1650,14 @@ function TurnEntryForm({
           stacked, since a tablet has plenty of width for three short
           labels and it reads more like a single decision (pick one of
           three) than a sequence of steps. */}
-      {game.status === 'Finished' && !needsTieResolution && (
+      {game.status === 'Finished' && !needsTieResolution && serverActionsLocked && (
+        <p data-testid="finish-waiting" style={{ margin: 0, textAlign: 'center', fontSize: '0.95rem', opacity: 0.85, flexShrink: 0 }}>
+          {queuedCount > 0
+            ? `Wartet auf Verbindung – ${queuedCount} ${queuedCount === 1 ? 'Wurf wird' : 'Würfe werden'} noch gesendet.`
+            : 'Wartet auf Verbindung…'}
+        </p>
+      )}
+      {game.status === 'Finished' && !needsTieResolution && !serverActionsLocked && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', flexShrink: 0 }}>
           {repeatError && (
             <p role="alert" style={{ color: DANGER, margin: 0, fontSize: '0.85rem', textAlign: 'center' }}>
@@ -1854,3 +1959,90 @@ function ThrowCorrectionPanel({
   )
 }
 
+
+/** Shown instead of "Letzten Wurf löschen" while offline or throws are still queued (decision 15.11.2026). */
+function CorrectionLockedHint() {
+  return (
+    <p data-testid="correction-locked" style={{ margin: 0, textAlign: 'center', fontSize: '0.9rem', opacity: 0.75 }}>
+      Korrektur erst wieder mit Verbindung
+    </p>
+  )
+}
+
+/**
+ * A throw the server refused (E-17): the queue stops here and the reason
+ * stays visible until the scorer decides - resend (e.g. after the Regie
+ * fixed something) or discard (two taps, like "Letzten Wurf löschen").
+ */
+function RejectedTurnBanner({
+  turn,
+  accent,
+  onRetry,
+  onDiscard,
+}: {
+  turn: PendingTurn
+  accent: string
+  onRetry: () => void
+  onDiscard: () => void
+}) {
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  useEffect(() => {
+    if (!confirmDiscard) return
+    const timeout = setTimeout(() => setConfirmDiscard(false), 3000)
+    return () => clearTimeout(timeout)
+  }, [confirmDiscard])
+
+  const buttonStyle: React.CSSProperties = {
+    borderRadius: '0.5rem',
+    padding: '0.6rem 1rem',
+    fontWeight: 700,
+    fontSize: '0.95rem',
+    cursor: 'pointer',
+  }
+
+  return (
+    <div
+      role="alert"
+      data-testid="rejected-turn"
+      style={{
+        flexShrink: 0,
+        border: `2px solid ${DANGER}`,
+        background: 'rgba(224, 82, 82, 0.15)',
+        borderRadius: '0.6rem',
+        padding: '0.8rem 1rem',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.6rem',
+      }}
+    >
+      <p style={{ margin: 0, fontWeight: 700 }}>
+        Wurf von {turn.playerName || 'Spieler'} ({turn.score}) nicht übernommen
+      </p>
+      <p style={{ margin: 0, fontSize: '0.9rem', opacity: 0.9 }}>{rejectionText(turn.rejection!)}</p>
+      <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+        <button type="button" onClick={onRetry} style={{ ...buttonStyle, border: `1px solid ${accent}`, background: accent, color: '#0b0a09' }}>
+          Erneut senden
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (confirmDiscard) {
+              setConfirmDiscard(false)
+              onDiscard()
+            } else {
+              setConfirmDiscard(true)
+            }
+          }}
+          style={{
+            ...buttonStyle,
+            border: `1px solid ${DANGER}`,
+            background: confirmDiscard ? DANGER : 'transparent',
+            color: confirmDiscard ? '#0b0a09' : DANGER,
+          }}
+        >
+          {confirmDiscard ? 'Wirklich verwerfen? Erneut drücken' : 'Verwerfen'}
+        </button>
+      </div>
+    </div>
+  )
+}

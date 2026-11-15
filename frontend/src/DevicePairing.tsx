@@ -3,6 +3,7 @@ import { DeviceConflictError, WrongPinError, api, type DevicePairing as Pairing,
 import logo from './assets/logo-full-transparent.svg'
 import { LiveBoardView, brandingColors } from './LiveGameView'
 import { QrCode, useServerOrigin } from './QrCode'
+import { retryUntilSuccess } from './realtime'
 import { TabletScoreEntry } from './TabletScoreEntry'
 import { DANGER, DEFAULT_PRIMARY } from './theme'
 
@@ -88,9 +89,19 @@ export function DevicePairing({
   const [pinError, setPinError] = useState<string | null>(null)
   const serverOrigin = useServerOrigin()
 
+  // Retried until it works (E-18) - a device that boots before the WLAN
+  // is up would otherwise stay on "Lädt…" forever.
   useEffect(() => {
-    api.getDevicePairing(eventId, clientDeviceId).then(setPairing)
-    api.getBranding(eventId).then(setBranding).catch(() => {})
+    let cancelled = false
+    retryUntilSuccess(() => api.getDevicePairing(eventId, clientDeviceId), () => cancelled).then((result) => {
+      if (!cancelled && result !== undefined) setPairing(result)
+    })
+    retryUntilSuccess(() => api.getBranding(eventId), () => cancelled).then((result) => {
+      if (!cancelled && result) setBranding(result)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [eventId, clientDeviceId])
 
   // While this device is sitting on the unpaired picker screen, the Regie
@@ -101,9 +112,12 @@ export function DevicePairing({
 
     let cancelled = false
     const interval = setInterval(() => {
-      api.getDevicePairing(eventId, clientDeviceId).then((result) => {
-        if (!cancelled && result) setRemotelyAssignedBoardId(result.boardId)
-      })
+      api
+        .getDevicePairing(eventId, clientDeviceId)
+        .then((result) => {
+          if (!cancelled && result) setRemotelyAssignedBoardId(result.boardId)
+        })
+        .catch(() => {})
     }, 3000)
     return () => {
       cancelled = true
@@ -168,9 +182,12 @@ export function DevicePairing({
     if (!pairing?.expiresAt) return
 
     const check = () => {
-      api.getDevicePairing(eventId, clientDeviceId).then((current) => {
-        if (!current) setPairing(null)
-      })
+      api
+        .getDevicePairing(eventId, clientDeviceId)
+        .then((current) => {
+          if (!current) setPairing(null)
+        })
+        .catch(() => {})
     }
     const interval = setInterval(check, 30000)
     return () => clearInterval(interval)

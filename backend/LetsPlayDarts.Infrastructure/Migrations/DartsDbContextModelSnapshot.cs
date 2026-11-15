@@ -324,6 +324,39 @@ namespace LetsPlayDarts.Infrastructure.Migrations
                     b.ToTable("Tournaments");
                 });
 
+            modelBuilder.Entity("LetsPlayDarts.Domain.Entities.TurnSubmission", b =>
+                {
+                    b.Property<Guid>("ClientTurnId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("BoardId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("ClientDeviceId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("GameId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<Guid>("PlayerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("RoundIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Score")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ClientTurnId");
+
+                    b.HasIndex("GameId");
+
+                    b.ToTable("TurnSubmissions");
+                });
+
             modelBuilder.Entity("LetsPlayDarts.Domain.Entities.Board", b =>
                 {
                     b.HasOne("LetsPlayDarts.Domain.Entities.Event", null)

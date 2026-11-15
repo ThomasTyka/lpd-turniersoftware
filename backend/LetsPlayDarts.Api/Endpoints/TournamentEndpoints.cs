@@ -100,6 +100,8 @@ public static class TournamentEndpoints
             // Game/KnockoutMatch/GroupRound only carry a plain TournamentId -
             // no FK relationship is configured for them (see EventEndpoints's
             // DELETE), so they'd otherwise be left behind as orphaned rows.
+            var gameIds = db.Games.Where(g => g.TournamentId == id).Select(g => g.Id);
+            db.TurnSubmissions.RemoveRange(db.TurnSubmissions.Where(t => gameIds.Contains(t.GameId)));
             db.Games.RemoveRange(db.Games.Where(g => g.TournamentId == id));
             db.KnockoutMatches.RemoveRange(db.KnockoutMatches.Where(m => m.TournamentId == id));
             db.GroupRounds.RemoveRange(db.GroupRounds.Where(g => g.TournamentId == id));

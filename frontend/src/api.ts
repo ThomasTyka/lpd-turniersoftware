@@ -626,17 +626,42 @@ export const api = {
     if (!response.ok) throw new Error(`API returned ${response.status}`)
     return (await response.json()) as DevicePairing
   },
-  submitTabletTurn: async (eventId: string, clientDeviceId: string, playerId: string, score: number) => {
-    const response = await fetch(`${API_BASE_URL}/api/events/${eventId}/devices/${clientDeviceId}/turns`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playerId, score }),
-    })
-    if (!response.ok) {
-      const message = await response.json().catch(() => `API returned ${response.status}`)
-      throw new Error(typeof message === 'string' ? message : `API returned ${response.status}`)
+  /**
+   * Sendet einen Wurf vom Tablet (E-17). Wirft OfflineError, wenn der Server
+   * nicht erreichbar ist oder nicht binnen 5 s antwortet, und
+   * TurnRejectedError mit festem Code, wenn der Server den Wurf ablehnt.
+   * `duplicate` = der Server kannte die Kennung schon (Wurf war bereits
+   * übernommen, nur die Antwort ging verloren).
+   */
+  submitTabletTurn: async (
+    eventId: string,
+    clientDeviceId: string,
+    turn: { playerId: string; score: number; clientTurnId: string; gameId?: string; roundIndex?: number },
+  ): Promise<{ game: Game; duplicate: boolean }> => {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), TABLET_REQUEST_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await fetch(`${API_BASE_URL}/api/events/${eventId}/devices/${clientDeviceId}/turns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(turn),
+        signal: controller.signal,
+      })
+    } catch {
+      throw new OfflineError('Server nicht erreichbar')
+    } finally {
+      clearTimeout(timeout)
     }
-    return (await response.json()) as Game
+    if (response.status >= 500) throw new OfflineError(`Server-Fehler ${response.status}`)
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      const code = typeof body?.code === 'string' ? body.code : 'Unknown'
+      const message = typeof body?.message === 'string' ? body.message : typeof body === 'string' ? body : `Fehler ${response.status}`
+      throw new TurnRejectedError(code, message)
+    }
+    const game = (await response.json()) as Game
+    return { game, duplicate: response.headers.get('X-Turn-Result') === 'duplicate' }
   },
   undoTabletTurn: async (eventId: string, clientDeviceId: string, playerId: string) => {
     const response = await fetch(`${API_BASE_URL}/api/events/${eventId}/devices/${clientDeviceId}/turns/undo`, {
@@ -688,6 +713,20 @@ export const api = {
 }
 
 export class DeviceConflictError extends Error {}
+
+const TABLET_REQUEST_TIMEOUT_MS = 5000
+
+/** Server nicht erreichbar (kein Netz, Zeitüberschreitung, Server-Fehler) - der Wurf bleibt in der Warteschlange. */
+export class OfflineError extends Error {}
+
+/** Server hat den Wurf mit festem Grund abgelehnt (siehe TabletTurnHandler.cs). */
+export class TurnRejectedError extends Error {
+  readonly code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.code = code
+  }
+}
 export class WrongPinError extends Error {}
 
 export type UpdateState = 'idle' | 'running' | 'success' | 'error'

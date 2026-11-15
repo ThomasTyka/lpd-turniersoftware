@@ -112,9 +112,13 @@ function CurrentEventBoardMonitor() {
   useEffect(() => {
     let cancelled = false
     const check = () => {
-      api.getCurrentEventId().then((id) => {
-        if (!cancelled) setEventId(id)
-      })
+      api
+        .getCurrentEventId()
+        .then((id) => {
+          if (!cancelled) setEventId(id)
+        })
+        // Offline: just keep waiting, the next 10 s tick asks again.
+        .catch(() => {})
     }
     check()
     const interval = setInterval(check, 10000)
@@ -163,9 +167,13 @@ function CurrentEventTabletPairing() {
   useEffect(() => {
     let cancelled = false
     const check = () => {
-      api.getCurrentEventId().then((id) => {
-        if (!cancelled) setEventId(id)
-      })
+      api
+        .getCurrentEventId()
+        .then((id) => {
+          if (!cancelled) setEventId(id)
+        })
+        // Offline: just keep waiting, the next 10 s tick asks again.
+        .catch(() => {})
     }
     check()
     const interval = setInterval(check, 10000)

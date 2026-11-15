@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import * as signalR from '@microsoft/signalr'
 import { Lottie } from 'lottie-react'
-import { API_BASE_URL, api, type EventBranding, type Game, type GameEntry } from './api'
+import { api, type EventBranding, type Game, type GameEntry } from './api'
 import logo from './assets/logo-full-transparent.svg'
 // Black-text variant for the small in-progress corner badge specifically -
 // kept separate from `logo` (white text), which stays the idle screen's
@@ -10,9 +9,8 @@ import logo from './assets/logo-full-transparent.svg'
 import logoBlackText from './assets/logo-black-text-transparent-trimmed.png'
 import { ensureReadableText } from './colorContrast'
 import { QrCode } from './QrCode'
+import { createLiveConnection, retryUntilSuccess, type ConnectionState } from './realtime'
 import { DANGER, DEFAULT_PRIMARY, DEFAULT_SECONDARY, SUCCESS } from './theme'
-
-type ConnectionState = 'connecting' | 'connected' | 'disconnected'
 
 // Base (desktop) sizing for the in-progress live view's bottom row - QR
 // code and LetsPlayDarts logo share the same height (BASE_ICON_PX).
@@ -723,12 +721,9 @@ export function useBranding(eventId: string | undefined, refreshSignal?: unknown
   useEffect(() => {
     if (!eventId) return
     let cancelled = false
-    api
-      .getBranding(eventId)
-      .then((result) => {
-        if (!cancelled) setBranding(result)
-      })
-      .catch(() => {})
+    retryUntilSuccess(() => api.getBranding(eventId), () => cancelled).then((result) => {
+      if (!cancelled && result) setBranding(result)
+    })
     return () => {
       cancelled = true
     }
@@ -750,27 +745,14 @@ export function LiveGameView({ gameId, eventId }: { gameId: string; eventId?: st
   const branding = useBranding(eventId)
 
   useEffect(() => {
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_BASE_URL}/hubs/game`)
-      .withAutomaticReconnect()
-      .build()
-
-    connection.on('gameUpdated', (updated: Game) => setGame(updated))
-    connection.onreconnecting(() => setConnectionState('connecting'))
-    connection.onreconnected(() => setConnectionState('connected'))
-    connection.onclose(() => setConnectionState('disconnected'))
-
-    connection
-      .start()
-      .then(() => {
-        setConnectionState('connected')
-        return connection.invoke('JoinGame', gameId)
-      })
-      .catch(() => setConnectionState('disconnected'))
-
-    return () => {
-      connection.stop()
-    }
+    // No REST endpoint for a single game without a Regie login - this view
+    // only ever showed what arrived live, so (as before) it fills in with
+    // the next update after a reconnect.
+    return createLiveConnection({
+      setup: (connection) => connection.on('gameUpdated', (updated: Game) => setGame(updated)),
+      onConnected: (connection) => connection.invoke('JoinGame', gameId),
+      onStateChange: setConnectionState,
+    })
   }, [gameId])
 
   return <GameDisplay game={game} connectionState={connectionState} eventId={eventId} branding={branding} />
@@ -802,8 +784,8 @@ export function LiveBoardView({
   useEffect(() => {
     if (!eventId) return
     let cancelled = false
-    api.getPairingBoards(eventId).then((boards) => {
-      if (!cancelled) setBoardNumber(boards.find((b) => b.id === boardId)?.number ?? null)
+    retryUntilSuccess(() => api.getPairingBoards(eventId), () => cancelled).then((boards) => {
+      if (!cancelled && boards) setBoardNumber(boards.find((b) => b.id === boardId)?.number ?? null)
     })
     return () => {
       cancelled = true
@@ -813,45 +795,38 @@ export function LiveBoardView({
   useEffect(() => {
     let cancelled = false
 
-    fetch(`${API_BASE_URL}/api/boards/${boardId}/current-game`)
-      .then((r) => (r.status === 404 ? null : r.json()))
-      .then((initial) => {
-        if (!cancelled) setGame(initial)
-      })
-
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_BASE_URL}/hubs/game`)
-      .withAutomaticReconnect()
-      .build()
-
-    connection.on('gameUpdated', (updated: Game) => setGame(updated))
-    connection.on('gameStarted', (started: Game) => setGame(started))
-    // A Tablet abandoning its game ("Beenden") hard-deletes it server-side -
-    // without this, the Monitor just kept showing the abandoned game
-    // forever instead of falling back to its idle/QR-pairing screen.
-    connection.on('gameCancelled', () => setGame(null))
-    connection.onreconnecting(() => setConnectionState('connecting'))
-    connection.onreconnected(() => {
-      setConnectionState('connected')
-      // Reconnect gets a new ConnectionId server-side, so presence and
-      // the board subscription both need to be re-established.
-      connection.invoke('JoinBoard', boardId)
-      if (clientDeviceId) connection.invoke('RegisterDevice', clientDeviceId)
+    // First load is retried until it works (E-18) - a stick that boots
+    // before the WLAN is up used to stay blank until a manual reload.
+    retryUntilSuccess(() => api.getCurrentGameForBoard(boardId), () => cancelled).then((initial) => {
+      if (!cancelled && initial !== undefined) setGame(initial)
     })
-    connection.onclose(() => setConnectionState('disconnected'))
 
-    connection
-      .start()
-      .then(async () => {
-        setConnectionState('connected')
+    const stop = createLiveConnection({
+      setup: (connection) => {
+        connection.on('gameUpdated', (updated: Game) => setGame(updated))
+        connection.on('gameStarted', (started: Game) => setGame(started))
+        // A Tablet abandoning its game ("Beenden") hard-deletes it server-side -
+        // without this, the Monitor just kept showing the abandoned game
+        // forever instead of falling back to its idle/QR-pairing screen.
+        connection.on('gameCancelled', () => setGame(null))
+      },
+      // Every (re)connect gets a new ConnectionId server-side, so presence
+      // and the board subscription are re-established - and the current
+      // game is reloaded, since updates sent while disconnected are lost.
+      onConnected: async (connection) => {
         await connection.invoke('JoinBoard', boardId)
         if (clientDeviceId) await connection.invoke('RegisterDevice', clientDeviceId)
-      })
-      .catch(() => setConnectionState('disconnected'))
+        const latest = await api.getCurrentGameForBoard(boardId)
+        if (!cancelled) setGame(latest)
+      },
+      onStateChange: (state) => {
+        if (!cancelled) setConnectionState(state)
+      },
+    })
 
     return () => {
       cancelled = true
-      connection.stop()
+      stop()
     }
   }, [boardId, clientDeviceId])
 
@@ -883,25 +858,25 @@ export function GreenscreenView({ boardId }: { boardId: string }) {
   useEffect(() => {
     let cancelled = false
 
-    fetch(`${API_BASE_URL}/api/boards/${boardId}/current-game`)
-      .then((r) => (r.status === 404 ? null : r.json()))
-      .then((initial) => {
-        if (!cancelled) setGame(initial)
-      })
+    retryUntilSuccess(() => api.getCurrentGameForBoard(boardId), () => cancelled).then((initial) => {
+      if (!cancelled && initial !== undefined) setGame(initial)
+    })
 
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_BASE_URL}/hubs/game`)
-      .withAutomaticReconnect()
-      .build()
-
-    connection.on('gameUpdated', (updated: Game) => setGame(updated))
-    connection.on('gameStarted', (started: Game) => setGame(started))
-    connection.onreconnected(() => connection.invoke('JoinBoard', boardId))
-    connection.start().then(() => connection.invoke('JoinBoard', boardId))
+    const stop = createLiveConnection({
+      setup: (connection) => {
+        connection.on('gameUpdated', (updated: Game) => setGame(updated))
+        connection.on('gameStarted', (started: Game) => setGame(started))
+      },
+      onConnected: async (connection) => {
+        await connection.invoke('JoinBoard', boardId)
+        const latest = await api.getCurrentGameForBoard(boardId)
+        if (!cancelled) setGame(latest)
+      },
+    })
 
     return () => {
       cancelled = true
-      connection.stop()
+      stop()
     }
   }, [boardId])
 

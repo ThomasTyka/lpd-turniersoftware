@@ -43,8 +43,8 @@ Stand 15.11.2026 · Wird nach jedem Arbeitsschritt aktualisiert (CLAUDE.md, Rege
 | P1-06 | offen | – |
 | P1-07 | offen | – (E-12) |
 | P1-08 | offen | – (E-11, Laufwerk `L:`) |
-| P1-09 | offen | Neuverbinden nur ≈ 45 s; Boardnummer bleibt (Geräte-ID lokal gespeichert). E-18. |
-| P1-10 | offen | Warteschlange vorhanden, aber Würfe gehen verloren / können doppelt zählen. **E-17, höchste Priorität.** |
+| P1-09 | in Arbeit | Umgesetzt mit E-18, wartet auf Abnahme (WLAN 5 min trennen). |
+| P1-10 | in Arbeit | Umgesetzt mit E-17, wartet auf Abnahme (Tablet offline, 3 Würfe, wieder online). |
 | P1-11 | offen | „Kein aktives Event – wartet…“ für `?tablet=current` / `?boardmonitor=current`, Abfrage alle 10 s. |
 | P1-12 | offen | Live nur auf der Leinwand (`brandingUpdated`); Monitor/Tablet nur beim Start. |
 | P1-13 | offen | Logos/Lottie lokal; Barlow, Videos, Vorladen fehlen. |
@@ -149,7 +149,7 @@ Stand 15.11.2026 · Wird nach jedem Arbeitsschritt aktualisiert (CLAUDE.md, Rege
 | P6-11 | offen | – |
 | P6-12 | offen | – |
 | P6-13 | offen | – |
-| P6-14 | offen | Keine Uhrzeit pro Aufnahme gespeichert. |
+| P6-14 | offen | Seit E-20 werden Zeitpunkt und Board je Tablet-Wurf gespeichert (`TurnSubmissions`); Würfe aus der Turnierleitung noch ohne. Anzeige fehlt. |
 
 ## Entscheidungen 15.11.2026 (E-xx)
 
@@ -171,8 +171,11 @@ Stand 15.11.2026 · Wird nach jedem Arbeitsschritt aktualisiert (CLAUDE.md, Rege
 | E-14 | P1 | offen | Videos per Git LFS unter `frontend/public/media/` |
 | E-15 | P1 | offen | Design-Grundlage (Farben, Barlow, Variablen) |
 | E-16 | – | erledigt | `CLAUDE.md` im Hauptordner (mit erstem Doku-Commit) |
-| E-17 | P1 | offen | **Höchste Priorität:** Wurf-Kennung, offline weiterrücken, nichts stillschweigend verwerfen |
-| E-18 | P1 | offen | Nach Neuverbinden neu laden; ersten Abruf wiederholen |
+| E-17 | P1 | in Arbeit | Umgesetzt (Wurf-Kennung, feste Ablehnungs-Codes, offline weiterrücken, Hinweisleiste „Erneut senden / Verwerfen“); Backend-Tests und Browser-Prüfung grün; wartet auf Abnahme. |
+| E-18 | P1 | in Arbeit | Umgesetzt (`frontend/src/realtime.ts`: Neuverbinden ohne Zeitlimit, Neuladen nach jeder Verbindung, erster Abruf mit Wiederholung) für Tablet, Board-Monitor, Leinwand, K.O.-Baum, Podest, Greenscreen, `?monitor=`, Kopplung und Turnierleitung; wartet auf Abnahme. |
+| E-19 | P1 | in Arbeit | Korrekturen u. a. offline gesperrt – umgesetzt mit E-17 |
+| E-20 | P1 | in Arbeit | Zeitpunkt + Board pro Wurf in `TurnSubmissions` – umgesetzt mit E-17 |
+| E-21 | P1 | in Arbeit | Abgelehnte Würfe nur am Tablet – umgesetzt mit E-17 |
 
 ## Fehler aus der Bestandsaufnahme (F-xx)
 

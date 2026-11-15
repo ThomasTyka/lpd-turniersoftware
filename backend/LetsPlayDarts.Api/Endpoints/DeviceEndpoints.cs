@@ -225,38 +225,11 @@ public static class DeviceEndpoints
         // Anonymous, but scoped: a Tablet can only submit scores for the
         // board it is actually paired to, not an arbitrary one - "Tablets
         // können nur Scores für ihr Board eingeben" from the project plan.
-        devices.MapPost("/{clientDeviceId:guid}/turns", async (
+        // See TabletTurnHandler for the duplicate detection (E-17) and the
+        // fixed rejection codes.
+        devices.MapPost("/{clientDeviceId:guid}/turns", (
             Guid eventId, Guid clientDeviceId, SubmitTabletTurnRequest request, DartsDbContext db, IHubContext<GameHub> hub) =>
-        {
-            var device = await db.Devices.FirstOrDefaultAsync(d =>
-                d.EventId == eventId && d.ClientDeviceId == clientDeviceId);
-            if (device is null || device.IsExpired)
-                return Results.NotFound("Device is not paired.");
-
-            if (device.Type != DeviceType.Tablet)
-                return Results.BadRequest("Only a Tablet can submit turns this way.");
-
-            var game = await db.Games
-                .Where(g => g.BoardId == device.BoardId && g.Status == GameStatus.InProgress)
-                .OrderByDescending(g => g.StartedAt)
-                .FirstOrDefaultAsync();
-            if (game is null)
-                return Results.NotFound("No active game on this device's board.");
-
-            try
-            {
-                game.RecordTurn(request.PlayerId, request.Score);
-                await db.SaveChangesAsync();
-                var dto = await GameEndpoints.ToDtoAsync(game, db);
-                await hub.Clients.Group(GameHub.GroupName(game.Id)).SendAsync("gameUpdated", dto);
-                await hub.Clients.Group(GameHub.BoardGroupName(game.BoardId)).SendAsync("gameUpdated", dto);
-                return Results.Ok(dto);
-            }
-            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-            {
-                return Results.BadRequest(ex.Message);
-            }
-        });
+            TabletTurnHandler.HandleAsync(eventId, clientDeviceId, request, db, hub));
 
         // Same pairing-scoped authorization as submitting a turn - a Tablet
         // can only undo turns for the game currently running on its own
@@ -422,7 +395,10 @@ public record DeviceDto(Guid ClientDeviceId, Guid EventId, DeviceType Type, Guid
 
 public record PairingBoardDto(Guid Id, int Number, string? Name, bool MonitorOnline);
 
-public record SubmitTabletTurnRequest(Guid PlayerId, int Score);
+/// <param name="ClientTurnId">Kennung des Wurfs, vom Tablet erzeugt (E-17). Optional nur für ältere Clients/Tests.</param>
+/// <param name="GameId">Spiel, für das der Wurf gedacht ist. Optional - ohne Angabe gilt das laufende Spiel am Board.</param>
+/// <param name="RoundIndex">0-basierte Aufnahme-Nummer des Spielers, die der Wurf belegen soll. Optional.</param>
+public record SubmitTabletTurnRequest(Guid PlayerId, int Score, Guid? ClientTurnId = null, Guid? GameId = null, int? RoundIndex = null);
 
 public record UndoTabletTurnRequest(Guid PlayerId);
 

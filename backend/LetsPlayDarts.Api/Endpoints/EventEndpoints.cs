@@ -51,6 +51,8 @@ public static class EventEndpoints
             // a plain TournamentId - no FK relationship is configured for
             // them, so they'd otherwise be left behind as orphaned rows.
             var tournamentIds = eventEntity.Tournaments.Select(t => t.Id).ToList();
+            var gameIds = db.Games.Where(g => tournamentIds.Contains(g.TournamentId)).Select(g => g.Id);
+            db.TurnSubmissions.RemoveRange(db.TurnSubmissions.Where(t => gameIds.Contains(t.GameId)));
             db.Games.RemoveRange(db.Games.Where(g => tournamentIds.Contains(g.TournamentId)));
             db.KnockoutMatches.RemoveRange(db.KnockoutMatches.Where(m => tournamentIds.Contains(m.TournamentId)));
             db.GroupRounds.RemoveRange(db.GroupRounds.Where(g => tournamentIds.Contains(g.TournamentId)));

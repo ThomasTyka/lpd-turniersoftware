@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import * as signalR from '@microsoft/signalr'
-import { API_BASE_URL, api, type Game, type LeaderboardEntry, type LeinwandSettings, type PairingBoard } from './api'
+import { api, type Game, type LeaderboardEntry, type LeinwandSettings, type PairingBoard } from './api'
 import logo from './assets/logo-full-transparent.svg'
 import { AnimatedNumber, brandingColors, useBranding } from './LiveGameView'
+import { createLiveConnection, retryUntilSuccess } from './realtime'
 import { SUCCESS } from './theme'
 
 const DEFAULT_SETTINGS: LeinwandSettings = { activeScenes: ['scores', 'leaderboard'], intervalSeconds: 10, pinnedScene: null }
@@ -38,102 +38,110 @@ export function LeinwandView({ eventId }: { eventId: string }) {
   const { primary, secondary } = brandingColors(branding)
 
   useEffect(() => {
-    api.getLeinwandSettings(eventId).then(setSettings).catch(() => {})
+    let cancelled = false
+    retryUntilSuccess(() => api.getLeinwandSettings(eventId), () => cancelled).then((loaded) => {
+      if (!cancelled && loaded) setSettings(loaded)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [eventId])
 
   useEffect(() => {
     let cancelled = false
-    let connection: signalR.HubConnection | null = null
+    let stop: (() => void) | null = null
 
-    // Boards are fetched first, and the SignalR connection only created
-    // once they're in - not in parallel. JoinBoard needs the board list,
-    // and starting the connection before it's ready would let the
-    // handshake win the race: joinAllBoards() would run against an empty
-    // list, join nothing, and never retry - silently missing every update
-    // with no visible error.
-    api.getPairingBoards(eventId).then(async (loaded) => {
-      if (cancelled) return
+    // Detects a 180 throw by comparing round-score counts against the
+    // previous game snapshot - same "who just threw" pattern as the
+    // Board-Monitor's reveal logic ("Highlight-Einblendungen: Bei einem
+    // 180er [...] wird automatisch eine Animation [...] gelegt").
+    const applyUpdate = (game: Game) => {
+      setGames((prev) => {
+        const prevGame = prev[game.boardId]
+        const thrower = game.entries.find((entry) => {
+          const prevEntry = prevGame?.entries.find((p) => p.playerId === entry.playerId)
+          return prevEntry && entry.roundScores.length > prevEntry.roundScores.length
+        })
+        if (thrower) {
+          const lastScore = thrower.roundScores[thrower.roundScores.length - 1]
+          if (lastScore === 180) {
+            setHighlight({ playerName: thrower.playerName, score: lastScore })
+            setTimeout(() => setHighlight(null), 4000)
+          }
+        }
+        // Old system reloaded its Vorrunden-Rangliste the moment any
+        // game in the event finished (MQTT "game finished" message),
+        // not on a fixed timer - this is the SignalR equivalent, reusing
+        // the connection already open for the Scores scene rather than
+        // giving LeaderboardScene a second one of its own. Fires on
+        // *any* update to a Finished game, not just the transition into
+        // it - a correction to an already-finished game's score also
+        // changes the leaderboard, but wouldn't otherwise trigger this
+        // (prevGame.status was already 'Finished' too), leaving it to
+        // wait out the rest of the 15s poll instead of updating - and
+        // animating - right away.
+        if (game.status === 'Finished') {
+          setLeaderboardRefreshSignal((n) => n + 1)
+        }
+        return { ...prev, [game.boardId]: game }
+      })
+    }
+
+    const loadGames = (boards: PairingBoard[]) =>
+      Promise.all(
+        boards.map((board) =>
+          api.getCurrentGameForBoard(board.id).then((game) => {
+            if (!cancelled) setGames((prev) => ({ ...prev, [board.id]: game }))
+          }),
+        ),
+      )
+
+    // Boards are fetched first (retried until it works, E-18), and the
+    // SignalR connection only created once they're in - not in parallel.
+    // JoinBoard needs the board list, and starting the connection before
+    // it's ready would let the handshake win the race: joining would run
+    // against an empty list, join nothing, and silently miss every update.
+    retryUntilSuccess(() => api.getPairingBoards(eventId), () => cancelled).then(async (loaded) => {
+      if (cancelled || !loaded) return
       setBoards(loaded)
       boardsRef.current = loaded
-      for (const board of loaded) {
-        api.getCurrentGameForBoard(board.id).then((game) => {
-          if (!cancelled) setGames((prev) => ({ ...prev, [board.id]: game }))
-        })
-      }
+      await retryUntilSuccess(() => loadGames(loaded), () => cancelled)
+      if (cancelled) return
 
-      connection = new signalR.HubConnectionBuilder()
-        .withUrl(`${API_BASE_URL}/hubs/game`)
-        .withAutomaticReconnect()
-        .build()
-
-      // Detects a 180 throw by comparing round-score counts against the
-      // previous game snapshot - same "who just threw" pattern as the
-      // Board-Monitor's reveal logic ("Highlight-Einblendungen: Bei einem
-      // 180er [...] wird automatisch eine Animation [...] gelegt").
-      const applyUpdate = (game: Game) => {
-        setGames((prev) => {
-          const prevGame = prev[game.boardId]
-          const thrower = game.entries.find((entry) => {
-            const prevEntry = prevGame?.entries.find((p) => p.playerId === entry.playerId)
-            return prevEntry && entry.roundScores.length > prevEntry.roundScores.length
-          })
-          if (thrower) {
-            const lastScore = thrower.roundScores[thrower.roundScores.length - 1]
-            if (lastScore === 180) {
-              setHighlight({ playerName: thrower.playerName, score: lastScore })
-              setTimeout(() => setHighlight(null), 4000)
-            }
-          }
-          // Old system reloaded its Vorrunden-Rangliste the moment any
-          // game in the event finished (MQTT "game finished" message),
-          // not on a fixed timer - this is the SignalR equivalent, reusing
-          // the connection already open for the Scores scene rather than
-          // giving LeaderboardScene a second one of its own. Fires on
-          // *any* update to a Finished game, not just the transition into
-          // it - a correction to an already-finished game's score also
-          // changes the leaderboard, but wouldn't otherwise trigger this
-          // (prevGame.status was already 'Finished' too), leaving it to
-          // wait out the rest of the 15s poll instead of updating - and
-          // animating - right away.
-          if (game.status === 'Finished') {
-            setLeaderboardRefreshSignal((n) => n + 1)
-          }
-          return { ...prev, [game.boardId]: game }
-        })
-      }
-      connection.on('gameUpdated', applyUpdate)
-      connection.on('gameStarted', applyUpdate)
-      connection.on('leinwandSettingsUpdated', (updated: LeinwandSettings) => setSettings(updated))
-      // Backend pushes this whenever the Regie changes branding colors or
-      // uploads a new logo, since the Leinwand's own useBranding fetch
-      // otherwise only runs once on mount - without this, a Leinwand that's
-      // already open (common - the TV often runs all day) would keep
-      // showing the old/no logo until someone manually reloads it.
-      connection.on('brandingUpdated', () => setBrandingRefreshSignal((n) => n + 1))
-
-      const joinAll = () =>
-        Promise.all([...boardsRef.current.map((b) => connection!.invoke('JoinBoard', b.id)), connection!.invoke('JoinLeinwand', eventId)])
-
-      connection.onreconnecting(() => setConnectionState('connecting'))
-      connection.onreconnected(() => {
-        setConnectionState('connected')
-        joinAll()
+      stop = createLiveConnection({
+        setup: (connection) => {
+          connection.on('gameUpdated', applyUpdate)
+          connection.on('gameStarted', applyUpdate)
+          connection.on('leinwandSettingsUpdated', (updated: LeinwandSettings) => setSettings(updated))
+          // Backend pushes this whenever the Regie changes branding colors or
+          // uploads a new logo, since the Leinwand's own useBranding fetch
+          // otherwise only runs once on mount - without this, a Leinwand that's
+          // already open (common - the TV often runs all day) would keep
+          // showing the old/no logo until someone manually reloads it.
+          connection.on('brandingUpdated', () => setBrandingRefreshSignal((n) => n + 1))
+        },
+        // After every (re)connect: rejoin all groups and reload everything
+        // that may have changed while disconnected (E-18).
+        onConnected: async (connection) => {
+          await Promise.all([
+            ...boardsRef.current.map((b) => connection.invoke('JoinBoard', b.id)),
+            connection.invoke('JoinLeinwand', eventId),
+          ])
+          await loadGames(boardsRef.current)
+          const latestSettings = await api.getLeinwandSettings(eventId)
+          if (!cancelled) setSettings(latestSettings)
+          setLeaderboardRefreshSignal((n) => n + 1)
+          setBrandingRefreshSignal((n) => n + 1)
+        },
+        onStateChange: (state) => {
+          if (!cancelled) setConnectionState(state)
+        },
       })
-      connection.onclose(() => setConnectionState('disconnected'))
-
-      try {
-        await connection.start()
-        if (cancelled) return
-        setConnectionState('connected')
-        await joinAll()
-      } catch {
-        if (!cancelled) setConnectionState('disconnected')
-      }
     })
 
     return () => {
       cancelled = true
-      connection?.stop()
+      stop?.()
     }
   }, [eventId])
 

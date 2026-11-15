@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import * as signalR from '@microsoft/signalr'
-import { API_BASE_URL, api, type AvailableSubstitute, type Board, type Game, type GroupRound } from './api'
+import { api, type AvailableSubstitute, type Board, type Game, type GroupRound } from './api'
+import { createLiveConnection } from './realtime'
 import { DANGER, DANGER_BG, TEXT_FAINT, TEXT_MUTED, buttonStyle, rowCardStyle, sectionHeadingStyle, tableStyle, tdStyle } from './theme'
 
 const fieldStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '0.3rem', fontSize: '0.8rem' }
@@ -34,25 +34,29 @@ export function GroupPanel({
   useEffect(reload, [eventId, tournamentId])
 
   useEffect(() => {
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_BASE_URL}/hubs/game`)
-      .withAutomaticReconnect()
-      .build()
-
-    connection.on('groupsUpdated', (updated: GroupRound[]) =>
-      setGroups((prev) => {
-        if (!prev) return updated
-        const byId = new Map(prev.map((g) => [g.id, g]))
-        for (const g of updated) byId.set(g.id, g)
-        return [...byId.values()]
-      }),
-    )
-    connection.onreconnected(() => connection.invoke('JoinTournament', tournamentId))
-    connection.start().then(() => connection.invoke('JoinTournament', tournamentId))
-
+    let cancelled = false
+    const stop = createLiveConnection({
+      setup: (connection) =>
+        connection.on('groupsUpdated', (updated: GroupRound[]) =>
+          setGroups((prev) => {
+            if (!prev) return updated
+            const byId = new Map(prev.map((g) => [g.id, g]))
+            for (const g of updated) byId.set(g.id, g)
+            return [...byId.values()]
+          }),
+        ),
+      // Reload after every (re)connect - updates sent while disconnected are lost (E-18).
+      onConnected: async (connection) => {
+        await connection.invoke('JoinTournament', tournamentId)
+        const latest = await api.getGroupRounds(eventId, tournamentId)
+        if (!cancelled) setGroups(latest)
+      },
+    })
     return () => {
-      connection.stop()
+      cancelled = true
+      stop()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tournamentId])
 
   if (error)

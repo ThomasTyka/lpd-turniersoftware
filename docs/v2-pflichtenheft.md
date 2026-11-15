@@ -234,5 +234,8 @@ Antworten von Thomas auf die Fragen aus der Bestandsaufnahme (`docs/v2-ist-stand
 | E-16 | Ablage `CLAUDE.md` | Im **Hauptordner** des Repos. |
 | E-17 | Tablet-Fehler: Würfe verloren / doppelt | **Höchste Priorität in Paket 1.** Jeder Wurf bekommt eine **eindeutige Kennung** (Server erkennt Wiederholungen), das Tablet **rückt offline korrekt zum nächsten Spieler weiter**, abgelehnte Würfe werden **nie stillschweigend verworfen** (sichtbarer Hinweis). (P1) |
 | E-18 | Neuverbinden und erster Abruf | Nach erfolgreichem Neuverbinden **holt jedes Gerät den aktuellen Stand neu**; der **erste Abruf beim Start wird wiederholt, bis er klappt**. (P1) |
+| E-19 | Korrekturen am Tablet offline | **Gesperrt**, solange keine Verbindung besteht oder noch Würfe warten (Hinweis „Korrektur erst wieder mit Verbindung“). Gilt auch für Abbrechen, Gleichstand entscheiden und die Knöpfe nach Spielende. (P1) |
+| E-20 | Zeitpunkt und Board pro Wurf | Werden **ab Paket 1 mitgespeichert** (Tabelle der empfangenen Würfe), Anzeige erst mit P6-14. (P1) |
+| E-21 | Abgelehnte Würfe melden | In Paket 1 **nur am Tablet**; Meldung in der Turnierleitung später mit P3-02. (P1) |
 
 Sicherung v1 (G-02): Tag `v1.0` und Branch `v1` auf Commit `9a6be3e`; gearbeitet wird auf Branch `v2`. Branch `v1` wird von Thomas auf GitHub geschützt.

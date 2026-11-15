@@ -25,6 +25,8 @@ public class DartsDbContext(DbContextOptions<DartsDbContext> options) : DbContex
 
     public DbSet<LeinwandSettings> LeinwandSettings => Set<LeinwandSettings>();
 
+    public DbSet<TurnSubmission> TurnSubmissions => Set<TurnSubmission>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Event>(entity =>
@@ -124,6 +126,13 @@ public class DartsDbContext(DbContextOptions<DartsDbContext> options) : DbContex
             entity.HasKey(s => s.EventId);
             entity.Property(s => s.EventId).ValueGeneratedNever();
             entity.PrimitiveCollection(s => s.ActiveScenes);
+        });
+
+        modelBuilder.Entity<TurnSubmission>(entity =>
+        {
+            entity.HasKey(t => t.ClientTurnId);
+            entity.Property(t => t.ClientTurnId).ValueGeneratedNever();
+            entity.HasIndex(t => t.GameId);
         });
     }
 }

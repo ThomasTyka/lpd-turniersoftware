@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import * as signalR from '@microsoft/signalr'
-import { API_BASE_URL, api, type DeviceStatus, type Game, type GameStatus, type PairingBoard } from './api'
+import { api, type DeviceStatus, type Game, type GameStatus, type PairingBoard } from './api'
+import { createLiveConnection, retryUntilSuccess } from './realtime'
 import { TEXT_FAINT, pillStyle, tableStyle, tdStyle, thStyle } from './theme'
 
 const STATUS_LABELS: Record<GameStatus, string> = {
@@ -52,61 +52,56 @@ export function BoardOverview({
 
   useEffect(() => {
     let cancelled = false
-    let connection: signalR.HubConnection | null = null
+    let stop: (() => void) | null = null
 
-    // Boards are fetched first, and the SignalR connection only created
-    // once they're in - not in parallel. JoinBoard needs the board list,
-    // and starting the connection before it's ready would let the
-    // handshake win the race: joinAllBoards() would run against an empty
-    // list, join nothing, and never retry - silently missing every update
-    // with no visible error.
-    api.getPairingBoards(eventId).then(async (loaded) => {
-      if (cancelled) return
+    const applyUpdate = (game: Game) => {
+      setGames((prev) => ({ ...prev, [game.boardId]: game }))
+      if (game.status === 'Finished' && !finishedGameIdsRef.current.has(game.id)) {
+        finishedGameIdsRef.current.add(game.id)
+        onGameFinishedRef.current?.()
+      }
+    }
+
+    const loadGames = (boards: PairingBoard[]) =>
+      Promise.all(
+        boards.map((board) =>
+          api.getCurrentGameForBoard(board.id).then((game) => {
+            if (!cancelled) setGames((prev) => ({ ...prev, [board.id]: game }))
+          }),
+        ),
+      )
+
+    // Boards are fetched first (retried until it works, E-18), and the
+    // SignalR connection only created once they're in - not in parallel.
+    // JoinBoard needs the board list, and starting the connection before
+    // it's ready would let the handshake win the race: joining would run
+    // against an empty list, join nothing, and silently miss every update.
+    retryUntilSuccess(() => api.getPairingBoards(eventId), () => cancelled).then(async (loaded) => {
+      if (cancelled || !loaded) return
       setBoards(loaded)
       boardsRef.current = loaded
-      for (const board of loaded) {
-        api.getCurrentGameForBoard(board.id).then((game) => {
-          if (!cancelled) setGames((prev) => ({ ...prev, [board.id]: game }))
-        })
-      }
+      await retryUntilSuccess(() => loadGames(loaded), () => cancelled)
+      if (cancelled) return
 
-      connection = new signalR.HubConnectionBuilder()
-        .withUrl(`${API_BASE_URL}/hubs/game`)
-        .withAutomaticReconnect()
-        .build()
-
-      const applyUpdate = (game: Game) => {
-        setGames((prev) => ({ ...prev, [game.boardId]: game }))
-        if (game.status === 'Finished' && !finishedGameIdsRef.current.has(game.id)) {
-          finishedGameIdsRef.current.add(game.id)
-          onGameFinishedRef.current?.()
-        }
-      }
-      connection.on('gameUpdated', applyUpdate)
-      connection.on('gameStarted', applyUpdate)
-
-      const joinAllBoards = () => Promise.all(boardsRef.current.map((b) => connection!.invoke('JoinBoard', b.id)))
-
-      connection.onreconnecting(() => setConnectionState('connecting'))
-      connection.onreconnected(() => {
-        setConnectionState('connected')
-        joinAllBoards()
+      stop = createLiveConnection({
+        setup: (connection) => {
+          connection.on('gameUpdated', applyUpdate)
+          connection.on('gameStarted', applyUpdate)
+        },
+        // After every (re)connect: rejoin and reload (E-18).
+        onConnected: async (connection) => {
+          await Promise.all(boardsRef.current.map((b) => connection.invoke('JoinBoard', b.id)))
+          await loadGames(boardsRef.current)
+        },
+        onStateChange: (state) => {
+          if (!cancelled) setConnectionState(state)
+        },
       })
-      connection.onclose(() => setConnectionState('disconnected'))
-
-      try {
-        await connection.start()
-        if (cancelled) return
-        setConnectionState('connected')
-        await joinAllBoards()
-      } catch {
-        if (!cancelled) setConnectionState('disconnected')
-      }
     })
 
     return () => {
       cancelled = true
-      connection?.stop()
+      stop?.()
     }
   }, [eventId])
 

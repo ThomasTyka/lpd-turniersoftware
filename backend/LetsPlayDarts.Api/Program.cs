@@ -28,7 +28,8 @@ builder.Services.AddCors(options =>
         policy.SetIsOriginAllowed(origin => Uri.TryCreate(origin, UriKind.Absolute, out var uri) && (uri.IsLoopback || IsPrivateLanHost(uri.Host)))
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowCredentials()));
+            .AllowCredentials()
+            .WithExposedHeaders(TabletTurnHandler.ResultHeader)));
 
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
 
@@ -150,3 +151,7 @@ static bool IsPrivateLanHost(string host) =>
     System.Net.IPAddress.TryParse(host, out var ip) &&
     ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
     ip.GetAddressBytes() is [10, ..] or [172, >= 16 and <= 31, ..] or [192, 168, ..];
+
+// Lets the integration tests (LetsPlayDarts.Tests) start this app via
+// WebApplicationFactory<Program>.
+public partial class Program;

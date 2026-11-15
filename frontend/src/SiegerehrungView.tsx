@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import * as signalR from '@microsoft/signalr'
-import { API_BASE_URL, api, type KnockoutMatch } from './api'
+import { api, type KnockoutMatch } from './api'
+import { createLiveConnection } from './realtime'
 import logo from './assets/logo-full-transparent.svg'
 import { brandingColors, useBranding } from './LiveGameView'
 
@@ -25,12 +25,16 @@ export function SiegerehrungView({ eventId, requestedTournamentId }: { eventId: 
   // see the identical comment in BracketLeinwandView.tsx for why.
   useEffect(() => {
     let cancelled = false
+    // Errors (offline) are simply retried by the next 10 s tick.
     const load = () =>
-      api.getEventKnockout(eventId, requestedTournamentId).then((result) => {
-        if (cancelled) return
-        setTournamentId(result?.tournamentId ?? null)
-        setMatches(result?.matches ?? [])
-      })
+      api
+        .getEventKnockout(eventId, requestedTournamentId)
+        .then((result) => {
+          if (cancelled) return
+          setTournamentId(result?.tournamentId ?? null)
+          setMatches(result?.matches ?? [])
+        })
+        .catch(() => {})
     load()
     const interval = setInterval(load, 10000)
     return () => {
@@ -41,17 +45,21 @@ export function SiegerehrungView({ eventId, requestedTournamentId }: { eventId: 
 
   useEffect(() => {
     if (!tournamentId) return
-    const connection = new signalR.HubConnectionBuilder()
-      .withUrl(`${API_BASE_URL}/hubs/game`)
-      .withAutomaticReconnect()
-      .build()
-    connection.on('knockoutUpdated', (updated: KnockoutMatch[]) => setMatches(updated))
-    connection.onreconnected(() => connection.invoke('JoinTournament', tournamentId))
-    connection.start().then(() => connection.invoke('JoinTournament', tournamentId))
+    let cancelled = false
+    const stop = createLiveConnection({
+      setup: (connection) => connection.on('knockoutUpdated', (updated: KnockoutMatch[]) => setMatches(updated)),
+      // Reload after every (re)connect - updates sent while disconnected are lost (E-18).
+      onConnected: async (connection) => {
+        await connection.invoke('JoinTournament', tournamentId)
+        const latest = await api.getEventKnockout(eventId, tournamentId)
+        if (!cancelled && latest) setMatches(latest.matches)
+      },
+    })
     return () => {
-      connection.stop()
+      cancelled = true
+      stop()
     }
-  }, [tournamentId])
+  }, [eventId, tournamentId])
 
   const bracketMatches = (matches ?? []).filter((m) => !m.isThirdPlaceMatch)
   const finalRound = bracketMatches.length > 0 ? Math.max(...bracketMatches.map((m) => m.round)) : null
